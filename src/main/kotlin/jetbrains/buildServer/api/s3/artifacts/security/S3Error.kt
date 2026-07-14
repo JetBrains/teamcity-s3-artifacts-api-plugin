@@ -29,32 +29,34 @@ data class S3Error(val code: String, val message: String, val httpStatus: Int)
  * no provisioned secret, or malformed authorization data) maps to `InvalidAccessKeyId`. Both are
  * HTTP 403 — authentication failures are never served and never leak which check failed beyond
  * these two codes.
+ *
+ * The client-facing [S3Error.message] is a fixed string per code, deliberately NOT the exception's
+ * own (more specific) message: within `InvalidAccessKeyId`, "unknown user", "no secret provisioned",
+ * and "malformed auth data" must be indistinguishable to the caller so the API cannot be used to
+ * probe which usernames exist. The specific exception messages are retained for server-side logs.
  */
 fun toS3Error(ex: S3AuthenticationException): S3Error = when (ex) {
     is SignatureMismatchException -> S3Error(
         code = "SignatureDoesNotMatch",
-        message = ex.message ?: "The request signature does not match the provisioned secret.",
+        message = "The request signature we calculated does not match the signature you provided.",
         httpStatus = 403
     )
     is InvalidAuthDataException -> S3Error(
         code = "InvalidAccessKeyId",
-        message = ex.message ?: "The access key id does not identify a valid user.",
+        message = "The access key id you provided does not identify a user with a provisioned S3 secret.",
         httpStatus = 403
     )
 }
 
 /**
  * Serializes this error as the S3 `<Error>` XML document, escaping text so a message can never
- * break out of its element. An optional [resource] (e.g. the requested path) is included when given.
+ * break out of its element.
  */
-fun S3Error.toXml(resource: String? = null): String = buildString {
+fun S3Error.toXml(): String = buildString {
     append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
     append("<Error>")
     append("<Code>").append(xmlEscape(code)).append("</Code>")
     append("<Message>").append(xmlEscape(message)).append("</Message>")
-    if (resource != null) {
-        append("<Resource>").append(xmlEscape(resource)).append("</Resource>")
-    }
     append("</Error>")
 }
 

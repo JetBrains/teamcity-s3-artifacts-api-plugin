@@ -25,7 +25,6 @@ import jetbrains.buildServer.serverSide.auth.Permission
 import jetbrains.buildServer.serverSide.auth.SecurityContext
 import jetbrains.buildServer.users.SUser
 import jetbrains.buildServer.users.UserModel
-import jetbrains.buildServer.users.UserSet
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -61,11 +60,14 @@ class S3CredentialControllerTest {
         every { userModel.findUserById(any()) } returns caller
     }
 
-    /** Makes [users] resolvable by username through UserModel.getAllUsers(). */
+    /** Makes [users] resolvable by username through UserModel.findUserAccount(realm, username). */
     private fun registerUsers(vararg users: SUser) {
-        val set = mockk<UserSet<SUser>>()
-        every { set.users } returns users.toSet()
-        every { userModel.allUsers } returns set
+        for (user in users) {
+            // Capture the username outside the every{} block: a nested mock call as a matcher
+            // argument is not reliably matched against the plain String the controller passes.
+            val name = user.username
+            every { userModel.findUserAccount(null, name) } returns user
+        }
     }
 
     @Test

@@ -17,7 +17,6 @@
 package jetbrains.buildServer.api.s3.artifacts.security
 
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -51,9 +50,13 @@ class S3ErrorTest {
     }
 
     @Test
-    fun `toXml includes the resource element only when provided`() {
-        assertFalse(S3Error("SignatureDoesNotMatch", "m", 403).toXml().contains("<Resource>"))
-        assertTrue(S3Error("SignatureDoesNotMatch", "m", 403).toXml("/bucket/key").contains("<Resource>/bucket/key</Resource>"))
+    fun `invalid auth data maps to a fixed message that does not disclose which check failed`() {
+        val unknownUser = toS3Error(InvalidAuthDataException("no user for access key id"))
+        val noSecret = toS3Error(InvalidAuthDataException("user has no provisioned secret"))
+
+        // Same client-facing message regardless of the (distinct) internal cause, so the API
+        // cannot be used to probe which usernames exist.
+        assertEquals(unknownUser.message, noSecret.message)
     }
 
     @Test

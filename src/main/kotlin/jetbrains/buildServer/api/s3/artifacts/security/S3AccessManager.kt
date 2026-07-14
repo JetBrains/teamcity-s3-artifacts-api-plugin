@@ -60,9 +60,9 @@ class S3AccessManager(
             ?: throw InvalidAuthDataException("Missing or malformed authorization data")
 
         val user = userModel.findUserAccount(null, auth.accessKeyId)
-            ?: throw InvalidAuthDataException("The access key id does not identify a valid user")
+            ?: throw InvalidAuthDataException("No user matches access key id '${auth.accessKeyId}'")
         if (userModel.isGuestUser(user)) {
-            throw InvalidAuthDataException("The access key id does not identify a valid user")
+            throw InvalidAuthDataException("The guest user cannot authenticate to the S3 API")
         }
 
         val secret = credentialStore.load(user)

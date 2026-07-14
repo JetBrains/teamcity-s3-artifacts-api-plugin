@@ -31,6 +31,7 @@ import jetbrains.buildServer.api.s3.artifacts.services.ListObjectsService
 import jetbrains.buildServer.controllers.interceptors.SkipInternalInterceptors
 import jetbrains.buildServer.serverSide.SecurityContextEx
 import jetbrains.buildServer.serverSide.auth.SecurityContext
+import jetbrains.buildServer.users.SUser
 import org.springframework.core.io.InputStreamResource
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
@@ -69,15 +70,20 @@ class MainController(
             .body(error.toXml())
     }
 
+    /**
+     * Authenticates the current S3 request and returns the identified user, or throws a typed
+     * [S3AuthenticationException] (mapped to an S3 `<Error>` by [handleAuthenticationFailure]).
+     */
+    private fun authenticate(request: HttpServletRequest, headers: Map<String, String>): SUser {
+        val queryString = request.queryString ?: ""
+        return accessManager.authenticate(request.method!!, request.requestURI!!, queryString, headers, "")
+    }
+
     @RequestMapping(path = ["/**"], method = [RequestMethod.HEAD])
     fun headRouter(request: HttpServletRequest, response: HttpServletResponse, @RequestHeader headers: Map<String, String>) {
-        val method = request.method
-        val path = request.requestURI
-        val queryString = request.queryString ?: ""
-        val body = ""
-        val user = accessManager.authenticate(method!!, path!!, queryString, headers, body)
+        val user = authenticate(request, headers)
         LOG.debug("S3 HEAD request authenticated as ${user.username}")
-        val objectKey = pathToObjectKey(path)
+        val objectKey = pathToObjectKey(request.requestURI)
         val objectMetadata = handleGetObjectHeadRequest(objectKey)
         response.addHeader("Content-Length", objectMetadata.size.toString())
         response.addHeader("Last-Modified", objectMetadata.lastModified)
@@ -105,13 +111,9 @@ class MainController(
         @RequestParam(value = "start-after", required = false) startAfter: String?,
         @RequestHeader headers: Map<String, String>
     ): Any {
-        val method = request.method
-        val path = request.requestURI
-        val queryString = request.queryString ?: ""
-        val body = ""
-        val user = accessManager.authenticate(method!!, path!!, queryString, headers, body)
+        val user = authenticate(request, headers)
         LOG.debug("S3 GET request authenticated as ${user.username}")
-        val objectKey = pathToObjectKey(path)
+        val objectKey = pathToObjectKey(request.requestURI)
         val result = if (listType == "2") {
             handleListObjects(objectKey, bucketRegion, continuationToken, maxKeys, prefix, delimiter, encodingType, fetchOwner, startAfter)
         } else if (objectKey.isNotBlank() && listType.isNullOrBlank()) {

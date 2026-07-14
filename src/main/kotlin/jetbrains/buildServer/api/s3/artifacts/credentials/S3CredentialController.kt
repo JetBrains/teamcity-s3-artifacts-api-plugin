@@ -108,7 +108,7 @@ class S3CredentialController(
                 "Managing another user's S3 credentials requires the global user-management permission"
             )
         }
-        return userModel.allUsers.users.firstOrNull { it.username == username }
+        return userModel.findUserAccount(null, username)
             ?: throw IllegalArgumentException("No TeamCity user with username '$username'")
     }
 
