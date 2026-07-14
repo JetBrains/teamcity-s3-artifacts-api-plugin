@@ -22,15 +22,19 @@ import jetbrains.buildServer.api.s3.artifacts.dto.ListObjectsResult
 import jetbrains.buildServer.api.s3.artifacts.services.ArtifactMetadata
 import jetbrains.buildServer.api.s3.artifacts.services.ArtifactObject
 import jetbrains.buildServer.api.s3.artifacts.services.GetObjectService
+import jetbrains.buildServer.api.s3.artifacts.security.S3AccessManager
+import jetbrains.buildServer.api.s3.artifacts.security.S3AuthenticationException
+import jetbrains.buildServer.api.s3.artifacts.security.toS3Error
+import jetbrains.buildServer.api.s3.artifacts.security.toXml
 import jetbrains.buildServer.api.s3.artifacts.services.ListBucketsService
 import jetbrains.buildServer.api.s3.artifacts.services.ListObjectsService
-import jetbrains.buildServer.api.s3.artifacts.signature.validation.validateRequestSignature
 import jetbrains.buildServer.controllers.interceptors.SkipInternalInterceptors
 import jetbrains.buildServer.serverSide.SecurityContextEx
 import jetbrains.buildServer.serverSide.auth.SecurityContext
 import org.springframework.core.io.InputStreamResource
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestMethod
@@ -44,6 +48,7 @@ import javax.servlet.http.HttpServletResponse
 @RequestMapping("/s3api")
 class MainController(
     private val securityContext: SecurityContext,
+    private val accessManager: S3AccessManager,
     private val listBucketsService: ListBucketsService,
     private val listObjectsService: ListObjectsService,
     private val getObjectService: GetObjectService
@@ -52,7 +57,16 @@ class MainController(
         private val LOG: Logger = Logger.getInstance(MainController::class.java)
     }
 
-    private fun checkPermission() {
+    /**
+     * Turns any authentication failure raised while handling an S3 request into an S3-style
+     * `<Error>` document with the mapped HTTP status (403), replacing the previous generic 500.
+     */
+    @ExceptionHandler(S3AuthenticationException::class)
+    fun handleAuthenticationFailure(ex: S3AuthenticationException): ResponseEntity<String> {
+        val error = toS3Error(ex)
+        return ResponseEntity.status(error.httpStatus)
+            .contentType(MediaType.APPLICATION_XML)
+            .body(error.toXml())
     }
 
     @RequestMapping(path = ["/**"], method = [RequestMethod.HEAD])
@@ -61,8 +75,8 @@ class MainController(
         val path = request.requestURI
         val queryString = request.queryString ?: ""
         val body = ""
-        validateRequestSignature(method!!, path!!, queryString, headers, body)
-        checkPermission()
+        val user = accessManager.authenticate(method!!, path!!, queryString, headers, body)
+        LOG.debug("S3 HEAD request authenticated as ${user.username}")
         val objectKey = pathToObjectKey(path)
         val objectMetadata = handleGetObjectHeadRequest(objectKey)
         response.addHeader("Content-Length", objectMetadata.size.toString())
@@ -95,8 +109,8 @@ class MainController(
         val path = request.requestURI
         val queryString = request.queryString ?: ""
         val body = ""
-        validateRequestSignature(method!!, path!!, queryString, headers, body)
-        checkPermission()
+        val user = accessManager.authenticate(method!!, path!!, queryString, headers, body)
+        LOG.debug("S3 GET request authenticated as ${user.username}")
         val objectKey = pathToObjectKey(path)
         val result = if (listType == "2") {
             handleListObjects(objectKey, bucketRegion, continuationToken, maxKeys, prefix, delimiter, encodingType, fetchOwner, startAfter)

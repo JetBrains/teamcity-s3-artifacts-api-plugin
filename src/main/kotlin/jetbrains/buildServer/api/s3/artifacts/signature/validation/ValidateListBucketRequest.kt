@@ -51,47 +51,86 @@ fun computeCanonicalRequest(method: String, path: String, queryString: String, h
     return listOf(method, path, canonicalQueryString, canonicalHeaders, signedHeaders, hashedPayload).joinToString("\n")
 }
 
-fun validateRequestSignature(method: String, path: String, queryString: String, headers: Map<String, String>, body: String) {
-    val authorization = headers["authorization"] ?: throw SecurityException("Missing Authorization header")
-    val xAmzDate = headers["x-amz-date"] ?: throw SecurityException("Missing x-amz-date header")
+/**
+ * The SigV4 authorization data extracted from a request's `Authorization` and `x-amz-date`
+ * headers. Carries everything needed to recompute the request signature, but not the secret
+ * itself (that is resolved separately from the identified user's credential).
+ */
+data class SigV4AuthData(
+    /** The SigV4 access-key-id, which is the caller's TeamCity username. */
+    val accessKeyId: String,
+    val dateStamp: String,
+    val region: String,
+    val service: String,
+    /** The credential-scope terminator, normally `aws4_request`. */
+    val terminator: String,
+    /** The `x-amz-date` timestamp used in the string-to-sign. */
+    val amzDate: String,
+    /** The signature the client presented, to be compared against the recomputed one. */
+    val providedSignature: String
+)
+
+/**
+ * Parses the SigV4 `Authorization` header (together with `x-amz-date`) into [SigV4AuthData].
+ *
+ * Returns `null` for every shape of malformed or missing input — absent headers, an unexpected
+ * algorithm, or a credential that is not the expected `accessKey/date/region/service/terminator`
+ * form. Callers treat a `null` result as an unresolvable identity (fail closed); no distinction is
+ * made between the malformed cases so the API never reveals why authentication failed.
+ */
+fun parseSigV4Authorization(headers: Map<String, String>): SigV4AuthData? {
+    val authorization = headers["authorization"] ?: return null
+    val amzDate = headers["x-amz-date"] ?: return null
 
     val parts = authorization.split(" ")
     if (parts.size < 2 || parts[0] != "AWS4-HMAC-SHA256") {
-        throw SecurityException("Invalid Authorization header format")
+        return null
     }
 
     val authParams = parts.drop(1).joinToString("") { it }
         .split(",")
-        .associate {
-            val keyValue = it.trim().split("=")
-            val key = keyValue[0]
-            val value = keyValue[1]
-            key to value
+        .mapNotNull {
+            val keyValue = it.trim().split("=", limit = 2)
+            if (keyValue.size != 2) null else keyValue[0] to keyValue[1]
         }
+        .toMap()
 
-    val credential = authParams["Credential"] ?: throw SecurityException("Missing Credential in Authorization header")
-    val providedSignature = authParams["Signature"] ?: throw SecurityException("Missing Signature in Authorization header")
+    val credential = authParams["Credential"] ?: return null
+    val providedSignature = authParams["Signature"] ?: return null
 
     val credParts = credential.split("/")
     if (credParts.size != 5) {
-        throw SecurityException("Invalid Credential format")
+        return null
     }
-    val accessKey = credParts[0]
-    val dateStamp = credParts[1]
-    val regionName = credParts[2]
-    val serviceName = credParts[3]
-    val lastPart = credParts[4]
 
-    val secret = lookupSecretForAccessKey(accessKey)
-    val canonicalRequest = computeCanonicalRequest(method, path, queryString, headers, body)
-    val hashedCanonicalRequest = hashSHA256Hex(canonicalRequest)
-    val scope = "$dateStamp/$regionName/$serviceName/$lastPart"
-    val stringToSign = listOf("AWS4-HMAC-SHA256", xAmzDate, scope, hashedCanonicalRequest).joinToString("\n")
-    if (!validateSignature(secret, dateStamp, regionName, serviceName, stringToSign, providedSignature)) {
-        throw SecurityException("Signature mismatch")
-    }
+    return SigV4AuthData(
+        accessKeyId = credParts[0],
+        dateStamp = credParts[1],
+        region = credParts[2],
+        service = credParts[3],
+        terminator = credParts[4],
+        amzDate = amzDate,
+        providedSignature = providedSignature
+    )
 }
 
-fun lookupSecretForAccessKey(accessKey: String): String {
-    return "your-secret-key"
+/**
+ * Recomputes the hex SigV4 request signature for the given secret and parsed auth data, using the
+ * same canonical-request / string-to-sign construction AWS SDKs use. Pure: given identical inputs
+ * it always yields the same signature, and it depends on the secret only through the signing key.
+ */
+fun computeRequestSignature(
+    secret: String,
+    auth: SigV4AuthData,
+    method: String,
+    path: String,
+    queryString: String,
+    headers: Map<String, String>,
+    body: String
+): String {
+    val canonicalRequest = computeCanonicalRequest(method, path, queryString, headers, body)
+    val hashedCanonicalRequest = hashSHA256Hex(canonicalRequest)
+    val scope = "${auth.dateStamp}/${auth.region}/${auth.service}/${auth.terminator}"
+    val stringToSign = listOf("AWS4-HMAC-SHA256", auth.amzDate, scope, hashedCanonicalRequest).joinToString("\n")
+    return computeExpectedSignature(secret, auth.dateStamp, auth.region, auth.service, stringToSign)
 }
