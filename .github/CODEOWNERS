@@ -1,0 +1,7 @@
+# Code owners for review routing.
+# Pull requests that touch these paths automatically request a review
+# from the owners listed below.
+#
+# Original author: Andrei Efimov <andrei.efimov@jetbrains.com>
+
+* @JetBrains/teamcity
