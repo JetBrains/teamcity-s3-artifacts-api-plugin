@@ -17,9 +17,12 @@
 package jetbrains.buildServer.api.s3.artifacts.security
 
 import jetbrains.buildServer.api.s3.artifacts.credentials.S3CredentialStore
+import jetbrains.buildServer.api.s3.artifacts.services.TeamCityAbstractionService
 import jetbrains.buildServer.api.s3.artifacts.signature.validation.computeRequestSignature
 import jetbrains.buildServer.api.s3.artifacts.signature.validation.constantTimeEquals
 import jetbrains.buildServer.api.s3.artifacts.signature.validation.parseSigV4Authorization
+import jetbrains.buildServer.serverSide.SBuildType
+import jetbrains.buildServer.serverSide.auth.Permission
 import jetbrains.buildServer.users.SUser
 import jetbrains.buildServer.users.UserModel
 import org.springframework.stereotype.Service
@@ -32,13 +35,20 @@ import org.springframework.stereotype.Service
  * SigV4 authorization data, resolves the access-key-id to a TeamCity user, loads and decrypts that
  * user's provisioned secret, then recomputes the SigV4 signature and compares it in constant time.
  * Every failure path is fail-closed and raises a typed [S3AuthenticationException]; there is no
- * default or fallback secret anywhere. Authorization of the identified user and run-as-user
- * execution (`authorize` / `filterVisibleBuckets`) are added to this same class in a later ticket.
+ * default or fallback secret anywhere.
+ *
+ * It also authorizes the identified user against a requested bucket ([authorize]) and filters the
+ * bucket listing to what the user may see ([filterVisibleBuckets]). A read requires BOTH
+ * [Permission.VIEW_PROJECT] and [Permission.VIEW_BUILD_RUNTIME_DATA] on the bucket's project — the
+ * former gates normal artifacts, the latter the hidden/internal ones the API also serves. A bucket
+ * the user may not view is reported as absent ([NoSuchBucketException]), indistinguishable from one
+ * that does not exist, so its existence cannot be probed.
  */
 @Service
 class S3AccessManager(
     private val userModel: UserModel,
-    private val credentialStore: S3CredentialStore
+    private val credentialStore: S3CredentialStore,
+    private val teamCityAbstractionService: TeamCityAbstractionService
 ) {
     /**
      * Authenticates an S3 request and returns the [SUser] whose secret it was signed with.
@@ -74,5 +84,44 @@ class S3AccessManager(
         }
 
         return user
+    }
+
+    /**
+     * Authorizes [user] against the bucket named by [objectKey] (its first path segment) and returns
+     * the resolved build configuration.
+     *
+     * Requires both [Permission.VIEW_PROJECT] and [Permission.VIEW_BUILD_RUNTIME_DATA] on the
+     * bucket's project. A bucket that does not exist and a bucket the user may not view both raise
+     * [NoSuchBucketException] — deliberately the same outcome, so a caller cannot tell a hidden
+     * build configuration from an absent one.
+     */
+    fun authorize(user: SUser, objectKey: String): SBuildType {
+        val bucketName = objectKey.substringBefore('/')
+        val buildType = resolveBucket(bucketName)
+        if (!canView(user, buildType)) {
+            throw NoSuchBucketException("User '${user.username}' may not view bucket '$bucketName'")
+        }
+        return buildType
+    }
+
+    /**
+     * Returns the subset of [candidates] the [user] may view, for `ListBuckets`. Uses the same
+     * permission rule as [authorize], so a bucket appears in the listing exactly when the user could
+     * go on to read it.
+     */
+    fun filterVisibleBuckets(user: SUser, candidates: List<SBuildType>): List<SBuildType> =
+        candidates.filter { canView(user, it) }
+
+    private fun resolveBucket(bucketName: String): SBuildType =
+        try {
+            teamCityAbstractionService.getBuildTypeForBucketName(bucketName)
+        } catch (e: IllegalArgumentException) {
+            throw NoSuchBucketException("No bucket named '$bucketName'")
+        }
+
+    private fun canView(user: SUser, buildType: SBuildType): Boolean {
+        val projectId = buildType.project.projectId
+        return user.isPermissionGrantedForProject(projectId, Permission.VIEW_PROJECT) &&
+            user.isPermissionGrantedForProject(projectId, Permission.VIEW_BUILD_RUNTIME_DATA)
     }
 }

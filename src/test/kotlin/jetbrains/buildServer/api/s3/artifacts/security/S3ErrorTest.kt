@@ -39,6 +39,22 @@ class S3ErrorTest {
     }
 
     @Test
+    fun `missing or forbidden bucket maps to NoSuchBucket with HTTP 404`() {
+        val error = toS3Error(NoSuchBucketException("hidden or absent"))
+
+        assertEquals("NoSuchBucket", error.code)
+        assertEquals(404, error.httpStatus)
+    }
+
+    @Test
+    fun `missing object maps to NoSuchKey with HTTP 404`() {
+        val error = toS3Error(NoSuchKeyException("no such artifact"))
+
+        assertEquals("NoSuchKey", error.code)
+        assertEquals(404, error.httpStatus)
+    }
+
+    @Test
     fun `toXml renders an S3 Error document with code and message`() {
         val xml = S3Error("InvalidAccessKeyId", "no such user", 403).toXml()
 

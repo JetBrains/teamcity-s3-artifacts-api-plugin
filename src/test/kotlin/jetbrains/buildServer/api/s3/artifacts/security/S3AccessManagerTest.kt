@@ -19,11 +19,17 @@ package jetbrains.buildServer.api.s3.artifacts.security
 import io.mockk.every
 import io.mockk.mockk
 import jetbrains.buildServer.api.s3.artifacts.credentials.S3CredentialStore
+import jetbrains.buildServer.api.s3.artifacts.services.TeamCityAbstractionService
 import jetbrains.buildServer.api.s3.artifacts.signature.validation.SigV4AuthData
 import jetbrains.buildServer.api.s3.artifacts.signature.validation.computeRequestSignature
+import jetbrains.buildServer.serverSide.SBuildType
+import jetbrains.buildServer.serverSide.SProject
+import jetbrains.buildServer.serverSide.auth.Permission
 import jetbrains.buildServer.users.SUser
 import jetbrains.buildServer.users.UserModel
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 
@@ -31,7 +37,8 @@ class S3AccessManagerTest {
 
     private val userModel = mockk<UserModel>()
     private val credentialStore = mockk<S3CredentialStore>()
-    private val accessManager = S3AccessManager(userModel, credentialStore)
+    private val teamCityAbstractionService = mockk<TeamCityAbstractionService>()
+    private val accessManager = S3AccessManager(userModel, credentialStore, teamCityAbstractionService)
 
     private val method = "GET"
     private val path = "/s3api/"
@@ -149,5 +156,90 @@ class S3AccessManagerTest {
         )
 
         assertThrows<InvalidAuthDataException> { authenticate(headers) }
+    }
+
+    // --- authorize / filterVisibleBuckets ---
+
+    private fun userNamed(name: String): SUser {
+        val user = mockk<SUser>()
+        every { user.username } returns name
+        return user
+    }
+
+    private fun bucketInProject(projectId: String): SBuildType {
+        val project = mockk<SProject>()
+        every { project.projectId } returns projectId
+        val buildType = mockk<SBuildType>()
+        every { buildType.project } returns project
+        return buildType
+    }
+
+    private fun grantOnProject(user: SUser, projectId: String, viewProject: Boolean, runtimeData: Boolean) {
+        every { user.isPermissionGrantedForProject(projectId, Permission.VIEW_PROJECT) } returns viewProject
+        every { user.isPermissionGrantedForProject(projectId, Permission.VIEW_BUILD_RUNTIME_DATA) } returns runtimeData
+    }
+
+    @Test
+    fun `authorize returns the build type when the user holds both required permissions`() {
+        val user = userNamed("alice")
+        val buildType = bucketInProject("project1")
+        every { teamCityAbstractionService.getBuildTypeForBucketName("MyBucket") } returns buildType
+        grantOnProject(user, "project1", viewProject = true, runtimeData = true)
+
+        val authorized = accessManager.authorize(user, "MyBucket/1.0/artifact.txt")
+
+        assertSame(buildType, authorized)
+    }
+
+    @Test
+    fun `authorize hides a bucket the user cannot VIEW_PROJECT as NoSuchBucket`() {
+        val user = userNamed("alice")
+        val buildType = bucketInProject("project1")
+        every { teamCityAbstractionService.getBuildTypeForBucketName("MyBucket") } returns buildType
+        grantOnProject(user, "project1", viewProject = false, runtimeData = true)
+
+        assertThrows<NoSuchBucketException> { accessManager.authorize(user, "MyBucket") }
+    }
+
+    @Test
+    fun `authorize hides a bucket the user cannot VIEW_BUILD_RUNTIME_DATA as NoSuchBucket`() {
+        val user = userNamed("alice")
+        val buildType = bucketInProject("project1")
+        every { teamCityAbstractionService.getBuildTypeForBucketName("MyBucket") } returns buildType
+        grantOnProject(user, "project1", viewProject = true, runtimeData = false)
+
+        assertThrows<NoSuchBucketException> { accessManager.authorize(user, "MyBucket") }
+    }
+
+    @Test
+    fun `a permission-denied bucket and a genuinely missing bucket both raise NoSuchBucket`() {
+        val user = userNamed("alice")
+
+        // Genuinely missing: bucket resolution fails.
+        every { teamCityAbstractionService.getBuildTypeForBucketName("ghost") } throws IllegalArgumentException("not found")
+        val miss = assertThrows<NoSuchBucketException> { accessManager.authorize(user, "ghost") }
+
+        // Exists, but the user may not view its project.
+        val buildType = bucketInProject("project1")
+        every { teamCityAbstractionService.getBuildTypeForBucketName("secret") } returns buildType
+        grantOnProject(user, "project1", viewProject = false, runtimeData = false)
+        val denied = assertThrows<NoSuchBucketException> { accessManager.authorize(user, "secret") }
+
+        // Same failure type -> same S3 error and status, so existence cannot be probed.
+        assertEquals(miss::class, denied::class)
+    }
+
+    @Test
+    fun `filterVisibleBuckets returns only the build types the user may view`() {
+        val user = userNamed("alice")
+        val visible = bucketInProject("project1")
+        val hidden = bucketInProject("project2")
+        grantOnProject(user, "project1", viewProject = true, runtimeData = true)
+        grantOnProject(user, "project2", viewProject = true, runtimeData = false)
+
+        val result = accessManager.filterVisibleBuckets(user, listOf(visible, hidden))
+
+        assertEquals(listOf(visible), result)
+        assertTrue(hidden !in result)
     }
 }

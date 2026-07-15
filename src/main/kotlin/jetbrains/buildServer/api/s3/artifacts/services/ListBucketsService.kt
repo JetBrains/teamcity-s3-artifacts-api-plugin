@@ -22,6 +22,7 @@ import jetbrains.buildServer.api.s3.artifacts.dto.Buckets
 import jetbrains.buildServer.api.s3.artifacts.dto.ListAllMyBucketsResult
 import jetbrains.buildServer.api.s3.artifacts.dto.Owner
 import jetbrains.buildServer.serverSide.ProjectManager
+import jetbrains.buildServer.serverSide.SBuildType
 import org.springframework.stereotype.Service
 
 @Service
@@ -37,12 +38,24 @@ class ListBucketsService(
         private const val DEFAULT_OWNER_NAME = "superuser"
     }
 
-    fun getBuckets(prefix: String?, maxBuckets: Int?): ListAllMyBucketsResult {
-        val buildTypes = projectManager.projects.asSequence()
+    /**
+     * Lists buckets (build configurations). [filterVisible] narrows the full candidate set to the
+     * ones the caller may see; it is applied before the prefix and max-buckets limits, so the limit
+     * counts only visible buckets. Callers pass the authenticated user's visibility filter, so
+     * `ListBuckets` never reveals build configurations the user cannot view.
+     */
+    fun getBuckets(
+        prefix: String?,
+        maxBuckets: Int?,
+        filterVisible: (List<SBuildType>) -> List<SBuildType>
+    ): ListAllMyBucketsResult {
+        val candidates = projectManager.projects.asSequence()
             .filterNot { it.isVirtual }
             .flatMap { it.buildTypes.asSequence() }
             .filterNot { it.isVirtual }
             .distinctBy { it.internalId }
+            .toList()
+        val buildTypes = filterVisible(candidates).asSequence()
             .filter { it.name.startsWith(prefix ?: "") }
             .take(maxBuckets ?: Int.MAX_VALUE)
             .toList()

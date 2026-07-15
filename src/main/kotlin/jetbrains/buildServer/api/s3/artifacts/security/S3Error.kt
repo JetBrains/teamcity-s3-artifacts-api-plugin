@@ -23,19 +23,21 @@ package jetbrains.buildServer.api.s3.artifacts.security
 data class S3Error(val code: String, val message: String, val httpStatus: Int)
 
 /**
- * Pure mapping from a typed authentication failure to its S3 error code and HTTP status.
+ * Pure mapping from a typed [S3ApiException] to its S3 error code and HTTP status.
  *
- * A bad signature maps to `SignatureDoesNotMatch`; an unresolvable identity (unknown/guest user,
- * no provisioned secret, or malformed authorization data) maps to `InvalidAccessKeyId`. Both are
- * HTTP 403 — authentication failures are never served and never leak which check failed beyond
- * these two codes.
+ * Authentication (403): a bad signature maps to `SignatureDoesNotMatch`; an unresolvable identity
+ * (unknown/guest user, no provisioned secret, or malformed authorization data) maps to
+ * `InvalidAccessKeyId`. Not-found (404): a missing/forbidden bucket maps to `NoSuchBucket`, a
+ * missing object to `NoSuchKey`.
  *
  * The client-facing [S3Error.message] is a fixed string per code, deliberately NOT the exception's
- * own (more specific) message: within `InvalidAccessKeyId`, "unknown user", "no secret provisioned",
- * and "malformed auth data" must be indistinguishable to the caller so the API cannot be used to
- * probe which usernames exist. The specific exception messages are retained for server-side logs.
+ * own (more specific) message. Within `InvalidAccessKeyId`, "unknown user", "no secret provisioned",
+ * and "malformed auth data" must be indistinguishable to the caller; likewise `NoSuchBucket` must
+ * look identical whether the bucket is genuinely absent or merely hidden by permissions — so the
+ * API cannot be used to probe which usernames or build configurations exist. The specific exception
+ * messages are retained for server-side logs.
  */
-fun toS3Error(ex: S3AuthenticationException): S3Error = when (ex) {
+fun toS3Error(ex: S3ApiException): S3Error = when (ex) {
     is SignatureMismatchException -> S3Error(
         code = "SignatureDoesNotMatch",
         message = "The request signature we calculated does not match the signature you provided.",
@@ -45,6 +47,16 @@ fun toS3Error(ex: S3AuthenticationException): S3Error = when (ex) {
         code = "InvalidAccessKeyId",
         message = "The access key id you provided does not identify a user with a provisioned S3 secret.",
         httpStatus = 403
+    )
+    is NoSuchBucketException -> S3Error(
+        code = "NoSuchBucket",
+        message = "The specified bucket does not exist.",
+        httpStatus = 404
+    )
+    is NoSuchKeyException -> S3Error(
+        code = "NoSuchKey",
+        message = "The specified key does not exist.",
+        httpStatus = 404
     )
 }
 
