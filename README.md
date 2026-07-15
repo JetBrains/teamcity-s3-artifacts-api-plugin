@@ -2,13 +2,11 @@
 
 [![official JetBrains project](http://jb.gg/badges/official.svg)](https://github.com/JetBrains#jetbrains-on-github)
 
-> [!WARNING]
-> **Reference implementation — not production-ready.** Authentication and
-> authorization are intentionally stubbed: the plugin ships with a **hardcoded,
-> source-visible secret**, performs **no per-user permission checks**, and runs
-> every request **with full server (system) privileges**. Deployed as-is,
-> anyone who can reach the endpoint can read **any** build artifact on the
-> server, which can expose secrets. **Do not deploy it as-is.** See
+> [!IMPORTANT]
+> Access is per-user: each request is signed with a TeamCity user's own S3
+> secret and authorized against that user's permissions, so a user sees only the
+> artifacts they could see in the TeamCity UI. Serve the endpoint over **HTTPS** —
+> SigV4 authenticates the request but does not encrypt it. See
 > [SECURITY.md](SECURITY.md) and the [Security](#security) section below.
 
 TeamCity server-side plugin that exposes build artifacts over an
@@ -44,8 +42,17 @@ upload the zip via **Administration | Plugins**, or drop it into
 Point any S3 client at the plugin endpoint (`<TeamCity URL>/s3api`) and address
 artifacts using a build configuration (external) id as the bucket, the build
 number as the first key segment, and the artifact path as the rest of the key.
-Configure your client with any access key id and the secret described in
-[Security](#security).
+
+Authenticate as yourself: your **access key id is your TeamCity username**, and
+the secret is the personal S3 secret you provision (see
+[Provisioning credentials](#provisioning-credentials)). Any region works — it is
+used only to build the SigV4 signature scope.
+
+```bash
+export AWS_ACCESS_KEY_ID="<your TeamCity username>"
+export AWS_SECRET_ACCESS_KEY="<your provisioned S3 secret>"
+export AWS_DEFAULT_REGION="us-east-1"   # any value; used only in the SigV4 scope
+```
 
 List the artifacts of a build, just like the build's **Artifacts** tab:
 
@@ -69,29 +76,64 @@ aws --endpoint-url "$TEAMCITY_URL/s3api" \
     s3 cp "s3://TestProject_Build/1/build.log" ./build.log
 ```
 
+## Provisioning credentials
+
+Before using the S3 API, provision a personal S3 secret. The provisioning
+endpoint lives at `<TeamCity URL>/s3credentials`, separate from the S3 endpoint,
+and uses TeamCity's normal authentication — call it as you would any
+authenticated TeamCity endpoint (an existing session, HTTP Basic, or a bearer
+token). It returns JSON, and your access key id is always your TeamCity username.
+
+```bash
+# Generate (or rotate) your secret — the secret is returned exactly once
+curl -X POST -u "<user>:<password>" "$TEAMCITY_URL/s3credentials"
+# {"accessKeyId":"<user>","secretAccessKey":"<secret>"}
+
+# Check whether you currently have a secret (never returns the secret itself)
+curl -u "<user>:<password>" "$TEAMCITY_URL/s3credentials"
+# {"accessKeyId":"<user>","hasSecret":true}
+
+# Revoke your secret, disabling your S3 access until you regenerate
+curl -X DELETE -u "<user>:<password>" "$TEAMCITY_URL/s3credentials"
+```
+
+Rotating replaces your previous secret immediately — the old one stops working.
+
+Server administrators holding the global user-management permission can rotate or
+revoke another user's secret (for offboarding or incident response) by adding
+`?username=<user>`:
+
+```bash
+curl -X POST   -u "<admin>:<password>" "$TEAMCITY_URL/s3credentials?username=<user>"
+curl -X DELETE -u "<admin>:<password>" "$TEAMCITY_URL/s3credentials?username=<user>"
+```
+
 ## Security
 
-> ⚠️ **This is a demo-grade authentication layer — do not deploy it as-is in
-> production.**
+Access is per-user and mirrors what each user can already see in the TeamCity UI.
 
-The plugin performs genuine **AWS Signature V4** verification of the request
-math, but the surrounding authentication and authorization are intentionally
-stubbed for the demo:
+- **Authentication.** Each request is authenticated with AWS Signature V4. The
+  access key id is a **TeamCity username**; the server loads that user's
+  provisioned secret, recomputes the signature, and compares it. There is **no
+  default or shared secret** — an unknown or guest username, a username with no
+  provisioned secret, or a bad signature is rejected (fail closed).
+- **Authorization.** Each request is authorized against the **authenticated
+  user's own permissions** and executed under that user's security context (not
+  the server's). Reading a build configuration's artifacts requires both
+  `VIEW_PROJECT` and `VIEW_BUILD_RUNTIME_DATA` on its project. `ListBuckets`
+  returns only the build configurations the user may view.
+- **Honest failures.** Authentication failures return HTTP **403**
+  (`SignatureDoesNotMatch` or `InvalidAccessKeyId`). A bucket or object the user
+  may not view returns HTTP **404** (`NoSuchBucket` / `NoSuchKey`) — identical to
+  a genuinely missing resource, so the API never reveals the existence of things
+  the caller is not allowed to see. All errors use S3-style `<Error>` XML.
 
-- **Hardcoded secret** — the secret lookup returns a fixed `"your-secret-key"`
-  for *any* access key id, so any request signed with that secret is accepted.
-- **No permission check** — the permission check is empty; access to build
-  configurations and artifacts is **not** authorized per user.
-- **Runs as system** — requests execute under `SecurityContextEx.runAsSystem`,
-  i.e. with full server privileges.
+The API is **read-only**: only `GET` (ListBuckets, ListObjectsV2, GetObject) and
+`HEAD` are implemented; uploading artifacts (`PUT`) is not.
 
-The API is also **read-only**: only `GET` (ListBuckets, ListObjectsV2,
-GetObject) and `HEAD` are implemented. Uploading artifacts (`PUT`/PutObject) is
-**not** implemented, despite the wording in the plugin descriptor.
-
-See [SECURITY.md](SECURITY.md) for the full security model, the recorded risk
-acceptance, a hardening checklist for real deployments, and how to report
-vulnerabilities.
+Serve the endpoint over **HTTPS** in any real deployment. See
+[SECURITY.md](SECURITY.md) for the full security model and the remaining operator
+hardening steps.
 
 ## License
 
