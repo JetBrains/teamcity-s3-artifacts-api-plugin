@@ -103,4 +103,15 @@ class S3CredentialStoreTest {
         assertNull(credentialStore.load(user))
         assertFalse(credentialStore.exists(user))
     }
+
+    @Test
+    fun `load and exists fail closed on a stored value that is not valid encrypted data`() {
+        val user = userWithBackingStore()
+        // A hand-edited or legacy plaintext value that was never produced by EncryptUtil.scramble:
+        // load must not throw, and both must report no usable secret.
+        user.setUserProperty(S3CredentialStore.SECRET_PROPERTY_KEY, "not-encrypted-plaintext")
+
+        assertNull(credentialStore.load(user))
+        assertFalse(credentialStore.exists(user))
+    }
 }

@@ -54,21 +54,29 @@ class S3CredentialStore {
         return secret
     }
 
-    /** Returns the user's decrypted secret, or null when none is provisioned. */
-    fun load(user: SUser): String? {
-        val stored = user.getPropertyValue(SECRET_PROPERTY_KEY)
-        if (stored.isNullOrEmpty()) {
-            return null
-        }
-        return EncryptUtil.unscramble(stored)
-    }
+    /**
+     * Returns the user's decrypted secret, or null when none is provisioned or the stored value is
+     * unusable. Fails closed on a malformed stored value rather than throwing (see [storedSecret]).
+     */
+    fun load(user: SUser): String? = storedSecret(user)?.let { EncryptUtil.unscramble(it) }
 
-    /** Whether the user currently has a secret provisioned. */
-    fun exists(user: SUser): Boolean = !user.getPropertyValue(SECRET_PROPERTY_KEY).isNullOrEmpty()
+    /** Whether the user currently has a usable secret provisioned. */
+    fun exists(user: SUser): Boolean = storedSecret(user) != null
 
     /** Removes the user's stored secret, disabling S3 access until it is regenerated. */
     fun revoke(user: SUser) {
         user.deleteUserProperty(SECRET_PROPERTY_KEY)
+    }
+
+    /**
+     * The stored, still-encrypted secret for [user], or null when there is no usable one: the
+     * property is absent/empty, or holds a value that is not valid reversibly-encrypted data (e.g.
+     * hand-edited, or written by a different scheme). Returning null there makes [load] and [exists]
+     * fail closed, instead of letting [EncryptUtil.unscramble] throw and surface as a 500.
+     */
+    private fun storedSecret(user: SUser): String? {
+        val stored = user.getPropertyValue(SECRET_PROPERTY_KEY)
+        return if (stored.isNullOrEmpty() || !EncryptUtil.isScrambled(stored)) null else stored
     }
 
     private fun randomSecret(): String {
