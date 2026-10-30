@@ -93,8 +93,8 @@ deployment:
 Please use JetBrains' coordinated disclosure process rather than a public issue:
 
 - Policy: <https://www.jetbrains.com/legal/docs/terms/coordinated-disclosure/>
-- Email: security@jetbrains.com (PGP key available on public key servers;
-  fingerprint `054C C087 8CA3 B1F0 DDBF 7A20 EF5A 4244 1A9D 68C8`)
+- YouTrack: create an issue at <https://youtrack.jetbrains.com/newIssue?project=TW>
+  and set the issue type to **Security Problem** to limit visibility.
 
 Please include a description and a working proof of concept, and do not disclose
 the issue publicly until it has been addressed.
